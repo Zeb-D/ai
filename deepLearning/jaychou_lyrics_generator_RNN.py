@@ -14,9 +14,11 @@ torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
 
+# 检查是否有 MPS（Metal Performance Shaders）可用，用于 M 系列芯片 GPU 加速
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 # 检查是否有 GPU 可用
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+print(f"Using device: {device}")
 
 class LyricsDataset(Dataset):
     def __init__(self, words, seq_length, word_to_idx, idx_to_word, vocab_size):
@@ -79,10 +81,11 @@ class RNNModel(nn.Module):
         return torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device)
 
 
-def train(model, data_loader, criterion, optimizer, epochs, device, save_path='models/', start_epoch=0):
+def train(model, data_loader, criterion, optimizer, epochs, device, save_path='models/model.pt', start_epoch=0, save_every=1):
     # 创建保存模型的目录
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
+    save_dir = os.path.dirname(save_path)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
 
     model.train()
     total_loss = 0
@@ -127,13 +130,15 @@ def train(model, data_loader, criterion, optimizer, epochs, device, save_path='m
                 total_loss = 0
                 start_time = time.time()
 
-        # 每个 epoch 保存一次模型
-        torch.save({
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict()
-        }, f'{save_path}model_epoch_{epoch + 1}.pt')
-        print(f'\nModel saved at {save_path}model_epoch_{epoch + 1}.pt')
+        elapsed_time = time.time() - start_time
+        print(f'\nEpoch {epoch + 1}/{epochs} completed in {elapsed_time:.2f} seconds')
+        # 每几个 epoch 保存一次模型
+        if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict()
+            }, save_path)
+            print(f'\nModel saved at {save_path}')
 
     return model
 
@@ -216,7 +221,7 @@ def preprocess_data(file_path):
 
 
 # 主函数
-def main():
+def main(retrain=False):
     # 数据预处理
     file_path = 'jaychou_lyrics.txt.zip'  # 请替换为实际的歌词 ZIP 文件路径
     words, word_to_idx, idx_to_word, vocab_size = preprocess_data(file_path)
@@ -241,21 +246,24 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     # 检查是否有保存的模型
-    save_path = 'models/'
+    save_path = 'models/model.pt'
     start_epoch = 0
-    if os.path.exists(save_path):
-        saved_models = [f for f in os.listdir(save_path) if f.startswith('model_epoch_')]
-        if saved_models:
-            latest_model = max(saved_models, key=lambda x: int(x.split('_')[2].split('.')[0]))
-            checkpoint = torch.load(os.path.join(save_path, latest_model))
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_epoch = checkpoint['epoch']
-            print(f"Resuming training from epoch {start_epoch}")
+    if not os.path.exists(save_path):
+        # 训练模型
+        print("training model...\n")
+        epochs = 30
+        model = train(model, data_loader, criterion, optimizer, epochs, device, save_path, start_epoch)
+    else:
+        print("loading model...\n")
+        checkpoint = torch.load(save_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print(f"Loaded existing model from {save_path}")
 
-    # 训练模型
-    epochs = 30
-    model = train(model, data_loader, criterion, optimizer, epochs, device, save_path, start_epoch)
+    if retrain:  # 重新训练模型
+        print(f"Resuming training from existing model at {save_path}")
+        epochs = 30
+        model = train(model, data_loader, criterion, optimizer, epochs, device, save_path, start_epoch)
 
     # 生成歌词
     seed_text = "窗外的鸡"  # 可以替换为你喜欢的任意歌词开头
@@ -267,4 +275,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 设置重新训练参数
+    retrain = False  # 设置为 True 表示重新训练，False 表示使用现有模型
+    main(retrain)
