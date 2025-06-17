@@ -125,7 +125,7 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
             total_loss += loss.item()
 
             # 更新进度条
-            progress_bar.set_description(f'Epoch {epoch + 1}/{epochs}, Loss: {loss.item():.4f}')
+            progress_bar.set_description(f'Epoch {epoch + 1}/{epochs}, Loss: {loss.item():.4f}, total_loss: {total_loss:.4f}')
 
         # 计算平均损失
         avg_loss = total_loss / len(data_loader)
@@ -258,7 +258,7 @@ def main():
         'seed_text': "窗外的麻雀",  # 可以替换为你喜欢的任意歌词开头
         'max_generate_length': 300,
         'temperature': 0.8,
-        'resume_training': True  # 是否从检查点恢复训练
+        'resume_training': False  # 是否从检查点恢复训练
     }
 
     # 数据预处理

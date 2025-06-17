@@ -7,18 +7,35 @@ import math
 import os
 import zipfile
 import jieba
+from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
 # 设置随机种子，保证结果可复现
 torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
 
-# 检查是否有 MPS（Metal Performance Shaders）可用，用于 M 系列芯片 GPU 加速
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-# 检查是否有 GPU 可用
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+device = torch.device("cpu")
+# 优先使用 CUDA，其次使用 MPS，最后使用 CPU
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+    print("Using MPS (Metal Performance Shaders) for GPU acceleration")
+# 检查 DirectML (Windows 上的 DirectX 12 加速)
+elif os.name == 'nt':  # Windows 系统
+    try:
+        import torch_directml  # 在windows 执行 pip install torch-directml
+
+        dml_device = torch_directml.device()
+        device = dml_device
+        print(f"Using DirectML for GPU acceleration on device: {torch_directml.device_name(dml_device)}")
+    except ImportError:
+        print("DirectML not installed. Using CPU.")
+        print("Install DirectML with: pip install torch-directml")
+
 
 class LyricsDataset(Dataset):
     def __init__(self, words, seq_length, word_to_idx, idx_to_word, vocab_size):
@@ -60,7 +77,7 @@ class RNNModel(nn.Module):
 
         # 定义网络层
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.rnn = nn.GRU(embed_size, hidden_size, num_layers,
+        self.rnn = nn.RNN(embed_size, hidden_size, num_layers,
                           batch_first=True, dropout=dropout)
         self.fc = nn.Linear(hidden_size, vocab_size)
 
@@ -81,30 +98,34 @@ class RNNModel(nn.Module):
         return torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device)
 
 
-def train(model, data_loader, criterion, optimizer, epochs, device, save_path='models/model.pt', start_epoch=0, save_every=1):
+# 使用tqdm显示进度条，优化训练循环
+def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, save_path='models/', start_epoch=0,
+          patience=3, ):
     # 创建保存模型的目录
-    save_dir = os.path.dirname(save_path)
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
 
     model.train()
-    total_loss = 0
-    start_time = time.time()
+    best_loss = float('inf')
+    early_stop_counter = 0
 
     for epoch in range(start_epoch, epochs):
-        # 初始化隐藏状态
+        cur_loss = 0
+        start_time = time.time()
         hidden = None
 
-        for i, (inputs, targets) in enumerate(data_loader):
+        # 使用tqdm显示进度条
+        progress_bar = tqdm(enumerate(data_loader), total=len(data_loader))
+        for i, (inputs, targets) in progress_bar:
             inputs, targets = inputs.to(device), targets.to(device)
             batch_size = inputs.size(0)
 
             # 为每个批次创建新的隐藏状态
-            if hidden is None or hidden.size(1) != batch_size:
+            if hidden is None or hidden[0].size(1) != batch_size:
                 hidden = model.init_hidden(batch_size)
             else:
-                # 只保留前 batch_size 个样本的隐藏状态
-                hidden = hidden[:, :batch_size, :].detach()
+                # 分离隐藏状态，防止梯度累积
+                hidden = (hidden[0].detach(), hidden[1].detach())
 
             # 前向传播
             outputs, hidden = model(inputs, hidden)
@@ -117,29 +138,50 @@ def train(model, data_loader, criterion, optimizer, epochs, device, save_path='m
             nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
 
-            total_loss += loss.item()
+            cur_loss = loss.item()
 
-            # 打印训练进度
-            if i % 100 == 0 and i > 0:
-                cur_loss = total_loss / 100
-                elapsed = time.time() - start_time
-                progress_str = f'Epoch: {epoch + 1}/{epochs} | Batch: {i}/{len(data_loader)} | ' \
-                               f'Loss: {cur_loss:.4f} | Perplexity: {math.exp(cur_loss):.2f} | ' \
-                               f'Time: {elapsed:.2f}s'
-                print(progress_str, end='\r')
-                total_loss = 0
-                start_time = time.time()
+            # 更新进度条
+            progress_bar.set_description(
+                f'Epoch-b {epoch + 1}/{epochs}, Loss: {loss.item():.4f}, cur_loss: {cur_loss:.4f}')
 
-        elapsed_time = time.time() - start_time
-        print(f'\nEpoch {epoch + 1}/{epochs} completed in {elapsed_time:.2f} seconds')
-        # 每几个 epoch 保存一次模型
-        if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict()
-            }, save_path)
-            print(f'\nModel saved at {save_path}')
+        # 计算平均损失
+        avg_loss = cur_loss / len(data_loader)
 
+        # 学习率调度
+        scheduler.step(avg_loss)
+
+        # 打印训练信息
+        elapsed = time.time() - start_time
+        print(f'Epoch-1: {epoch + 1}/{epochs} | Loss: {avg_loss:.4f} | '
+              f'Perplexity: {math.exp(avg_loss):.2f} | Time: {elapsed:.2f}s')
+
+        # 保存最佳模型和最新模型
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            torch.save(model.state_dict(), f'{save_path}model-rnn.pt')
+            print(f'Best model saved with loss: {avg_loss:.4f}，best_loss: {best_loss:.4f}')
+
+        # 只保存最新的检查点，覆盖之前的
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'loss': avg_loss,
+        }, f'{save_path}checkpoint-rnn.pt')
+
+        # 早停检查
+        if avg_loss >= best_loss:
+            early_stop_counter += 1
+            print(f'Early stopping counter: {early_stop_counter}/{patience}')
+            if early_stop_counter >= patience:
+                print(f'Early stopping triggered after {epoch + 1} epochs')
+                break
+        else:
+            early_stop_counter = 0
+
+    # 加载最佳模型
+    model.load_state_dict(torch.load(f'{save_path}model-rnn.pt'))
     return model
 
 
@@ -148,7 +190,27 @@ def generate_text(model, word_to_idx, idx_to_word, seed_text, max_length=200, te
 
     # 将种子文本分词并转换为索引
     seed_words = jieba.lcut(seed_text)
-    input_idx = [word_to_idx[word] for word in seed_words if word in word_to_idx]
+    input_idx = []
+
+    # 处理每个词，使用未知词标记或随机词替换不存在的词
+    for word in seed_words:
+        if word in word_to_idx:
+            input_idx.append(word_to_idx[word])
+        else:
+            print(f"警告: 词 '{word}' 不在词汇表中")
+            # 尝试使用 <UNK> 标记，如果词汇表中有的话
+            if '<UNK>' in word_to_idx:
+                input_idx.append(word_to_idx['<UNK>'])
+            else:
+                # 没有 <UNK> 标记时，使用随机词
+                input_idx.append(random.randint(0, len(word_to_idx) - 1))
+
+    # 如果处理后仍然没有有效词，使用随机词开始
+    if not input_idx:
+        print("警告: 种子文本处理后没有有效词，使用随机词开始")
+        input_idx = [random.randint(0, len(word_to_idx) - 1)]
+
+    # 初始化输入张量
     input_tensor = torch.tensor(input_idx, dtype=torch.long).unsqueeze(0).to(device)
 
     # 初始化隐藏状态
@@ -173,8 +235,8 @@ def generate_text(model, word_to_idx, idx_to_word, seed_text, max_length=200, te
             # 添加到生成的文本中
             generated_text += next_word
 
-            # 准备下一个输入
-            input_idx = [next_idx]
+            # 关键改进：将新生成的词添加到输入序列中
+            input_idx.append(next_idx)
             input_tensor = torch.tensor(input_idx, dtype=torch.long).unsqueeze(0).to(device)
 
     return generated_text
@@ -244,29 +306,31 @@ def main(retrain=False):
     # 定义损失函数和优化器
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    # 添加学习率调度
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
 
     # 检查是否有保存的模型
-    save_path = 'models/model.pt'
+    save_path = 'models/'
     start_epoch = 0
-    if not os.path.exists(save_path):
-        # 训练模型
-        print("training model...\n")
-        epochs = 30
-        model = train(model, data_loader, criterion, optimizer, epochs, device, save_path, start_epoch)
-    else:
+    epochs = 30
+    if os.path.exists(f"{save_path}checkpoint-rnn.pt"):
         print("loading model...\n")
-        checkpoint = torch.load(save_path)
+        checkpoint = torch.load(f"{save_path}checkpoint-rnn.pt")
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        start_epoch = checkpoint['epoch']
+        print(f"从 epoch {start_epoch} 加载训练")
+        print(f"之前的最佳损失: {checkpoint['loss']:.4f}")
         print(f"Loaded existing model from {save_path}")
-
-    if retrain:  # 重新训练模型
-        print(f"Resuming training from existing model at {save_path}")
-        epochs = 30
-        model = train(model, data_loader, criterion, optimizer, epochs, device, save_path, start_epoch)
+    else:
+        retrain = True  # 需要重新训练
+    if retrain:
+        print("training model...\n")
+        model = train(model, data_loader, criterion, optimizer, scheduler, epochs, device, save_path, start_epoch)
 
     # 生成歌词
-    seed_text = "窗外的鸡"  # 可以替换为你喜欢的任意歌词开头
+    seed_text = "窗外的麻雀"  # 可以替换为你喜欢的任意歌词开头
     generated_lyrics = generate_text(model, word_to_idx, idx_to_word, seed_text,
                                      max_length=300, temperature=0.8)
 
