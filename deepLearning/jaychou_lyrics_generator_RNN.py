@@ -171,7 +171,7 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
         }, f'{save_path}checkpoint-rnn.pt')
 
         # 早停检查
-        if avg_loss >= best_loss:
+        if cur_loss >= best_loss:
             early_stop_counter += 1
             print(f'Early stopping counter: {early_stop_counter}/{patience}')
             if early_stop_counter >= patience:
