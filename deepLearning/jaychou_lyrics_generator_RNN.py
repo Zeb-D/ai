@@ -156,10 +156,10 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
               f'Perplexity: {math.exp(avg_loss):.2f} | Time: {elapsed:.2f}s')
 
         # 保存最佳模型和最新模型
-        if avg_loss < best_loss:
-            best_loss = avg_loss
+        if cur_loss < best_loss:
+            best_loss = cur_loss
             torch.save(model.state_dict(), f'{save_path}model-rnn.pt')
-            print(f'Best model saved with loss: {avg_loss:.4f}，best_loss: {best_loss:.4f}')
+            print(f'Best model saved with loss: {cur_loss:.4f}，best_loss: {best_loss:.4f}')
 
         # 只保存最新的检查点，覆盖之前的
         torch.save({
@@ -340,5 +340,5 @@ def main(retrain=False):
 
 if __name__ == "__main__":
     # 设置重新训练参数
-    retrain = False  # 设置为 True 表示重新训练，False 表示使用现有模型
+    retrain = True  # 设置为 True 表示重新训练，False 表示使用现有模型
     main(retrain)
