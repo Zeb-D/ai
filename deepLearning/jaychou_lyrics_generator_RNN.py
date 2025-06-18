@@ -307,7 +307,7 @@ def main(retrain=False):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     # 添加学习率调度
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
     # 检查是否有保存的模型
     save_path = 'models/'
