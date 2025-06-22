@@ -1,3 +1,5 @@
+import re
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -22,14 +24,30 @@ torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
 
-# 检查是否有GPU可用
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-logger.info(f"使用设备 1: {device}")
+device = torch.device("cpu")
+# 优先使用 CUDA，其次使用 MPS，最后使用 CPU
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+    print("Using MPS-(Metal Performance Shaders) for GPU acceleration")
+# 检查 DirectML (Windows 上的 DirectX 12 加速)
+elif os.name == 'nt':  # Windows 系统
+    try:
+        import torch_directml  # 在windows 执行 pip install torch-directml
+
+        dml_device = torch_directml.device()
+        device = dml_device
+        print(f"Using DirectML for GPU acceleration on device: {torch_directml.device_name(dml_device)}")
+    except ImportError:
+        print("DirectML not installed. Using CPU.")
+        print("Install DirectML with: pip install torch-directml")
 
 
 # 数据预处理函数 - 优化分词处理
 def preprocess_data(file_path, use_tokenizer=True):
-    logger.info(f"开始处理数据文件: {file_path}")
+    print(f"开始处理数据文件: {file_path}")
     text = ""
 
     # 检查是否为ZIP文件
@@ -51,24 +69,45 @@ def preprocess_data(file_path, use_tokenizer=True):
                                 content = f.read().decode('gbk')
                             text += content
 
+    print(f"去除特殊字符前文本长度: {text}")
+    pattern = r'[^\u4e00-\u9fa5a-zA-Z0-9，。！？、；：“”‘’（）《》【】{}()\[\]<>—-—,.!?;:\'\"`~@#$%^&*()_+=\-|\\\/*]'
+    text = re.sub(pattern, '', text)
+    # 规范化空格和换行
+    # text = re.sub(r'\s+', ' ', text)  # 多个空格合并为一个
+    # text = re.sub(r'[ \t]+$', '', text, flags=re.M)  # 去除行尾空格
+    print(f"去除特殊字符后文本长度: {len(text)}")
+
     # 应用分词器
     if use_tokenizer:
         logger.info("使用分词器处理文本...")
         words = jieba.lcut(text)
-        tokens = words  # 分词后的词列表
+        # 过滤空字符串
+        tokens = [word for word in words if word.strip()]
         logger.info(f"分词后总词数: {len(tokens)}")
     else:
         # 未使用分词器，按字符处理
-        tokens = list(text)
+        tokens = [char for char in text if char.strip()]
         logger.info(f"总字符数: {len(tokens)}")
 
     # 创建词到索引和索引到词的映射
     unique_tokens = sorted(list(set(tokens)))
+
+    # 确保包含特殊标记（小写和大写形式）
+    special_tokens = ['<pad>', '<unk>', '<bos>', '<eos>',
+                      '<PAD>', '<UNK>', '<BOS>', '<EOS>',
+                      '[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]']
+
+    # 将特殊标记添加到词汇表开头
+    for token in reversed(special_tokens):  # 逆序添加确保顺序正确
+        if token not in unique_tokens:
+            unique_tokens.insert(0, token)
+
+    # 构建映射
     token_to_idx = {token: i for i, token in enumerate(unique_tokens)}
     idx_to_token = {i: token for i, token in enumerate(unique_tokens)}
     vocab_size = len(unique_tokens)
 
-    logger.info(f"词汇表大小: {vocab_size} 个唯一token")
+    print(f"词汇表大小: {vocab_size} 个唯一token，包含特殊标记")
 
     return tokens, token_to_idx, idx_to_token, vocab_size
 
@@ -172,10 +211,6 @@ class TransformerModel(nn.Module):
 
 # 模型加载助手函数
 def load_model_state(model, checkpoint_path, strict=True):
-    if not os.path.exists(checkpoint_path):
-        logger.info(f"检查点文件不存在: {checkpoint_path}")
-        return model
-
     logger.info(f"尝试加载检查点: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
@@ -219,16 +254,11 @@ def load_model_state(model, checkpoint_path, strict=True):
 def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, save_path='models/', patience=3,
           start_epoch=0, lr_threshold=1e-6):
     # 创建保存模型的目录
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
+    os.makedirs(save_path, exist_ok=True)
 
     model.train()
     best_loss = float('inf')
     early_stop_counter = 0
-
-    # 整体训练进度条
-    overall_progress = tqdm(total=epochs, desc="训练进度", position=0, dynamic_ncols=True)
-    overall_progress.update(start_epoch)
 
     # 指标记录
     metrics = {'best_loss': best_loss, 'current_loss': None, 'perplexity': None, 'early_stop': 0}
@@ -238,11 +268,8 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
         epoch_loss = 0.0
 
         # 每个epoch的批次进度条
-        batch_progress = tqdm(enumerate(data_loader), total=len(data_loader),
-                              desc=f"Epoch {epoch + 1}/{epochs}", position=1, leave=False, dynamic_ncols=True)
-
-        for i, (inputs, targets) in batch_progress:
-            # 数据快速传输到GPU
+        progress_bar = tqdm(enumerate(data_loader), total=len(data_loader))
+        for i, (inputs, targets) in progress_bar:
             inputs = inputs.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
 
@@ -267,22 +294,12 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
 
             epoch_loss += loss.item()
 
-            # 每10个批次更新一次进度条，减少刷新频率
-            if i % 10 == 0:
-                # 计算批次处理速度
-                batch_time = time.time() - epoch_start_time
-                samples_per_sec = inputs.size(0) / max(0.001, batch_time)  # 避免除零错误
-
-                # 更新批次进度条信息
-                current_lr = optimizer.param_groups[0]['lr']
-                batch_progress.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    '速度': f'{samples_per_sec:.2f}样本/秒',
-                    'lr': f"{current_lr:.8f}"  # 显示更多小数位以便观察
-                })
+            # 更新进度条
+            progress_bar.set_description(
+                f'Epoch-b {epoch + 1}/{epochs}, Loss: {loss.item():.4f}, cur_loss: {epoch_loss:.4f}')
 
         # 关闭批次进度条
-        batch_progress.close()
+        progress_bar.close()
 
         # 计算平均损失
         avg_loss = epoch_loss / len(data_loader)
@@ -298,22 +315,11 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
         # 计算当前epoch耗时
         epoch_time = time.time() - epoch_start_time
 
-        # 更新整体进度条信息
-        overall_progress.set_postfix({
-            '最佳损失': f"{metrics['best_loss']:.4f}",
-            '当前损失': f"{avg_loss:.4f}",
-            '困惑度': f"{perplexity:.2f}",
-            '耗时': f"{epoch_time:.2f}s",
-            '早停计数': f"{early_stop_counter}/{patience}",
-            '学习率': f"{current_lr:.8f}"
-        })
-        overall_progress.update(1)
-
         # 保存最佳模型和最新模型
         if avg_loss < metrics['best_loss']:
             metrics['best_loss'] = avg_loss
             torch.save(model.state_dict(), f'{save_path}best_model.pt')
-            overall_progress.write(f"Epoch {epoch + 1}: 保存最佳模型，损失={avg_loss:.4f}")
+            logger.info(f"Epoch {epoch + 1}: 保存最佳模型，损失={avg_loss:.4f}")
 
         # 保存检查点
         torch.save({
@@ -326,7 +332,7 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
 
         # 学习率阈值检查
         if current_lr < lr_threshold:
-            overall_progress.write(f"Epoch {epoch + 1}: 学习率 {current_lr:.8f} 低于阈值 {lr_threshold}, 提前终止训练")
+            logger.info(f"Epoch {epoch + 1}: 学习率 {current_lr:.8f} 低于阈值 {lr_threshold}, 提前终止训练")
             break
 
         # 早停检查
@@ -334,13 +340,10 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
             early_stop_counter += 1
             metrics['early_stop'] = early_stop_counter
             if early_stop_counter >= patience:
-                overall_progress.write(f"Epoch {epoch + 1}: 触发早停，最佳损失={metrics['best_loss']:.4f}")
+                logger.info(f"Epoch {epoch + 1}: 触发早停，最佳损失={metrics['best_loss']:.4f}")
                 break
         else:
             early_stop_counter = 0
-
-    # 关闭整体进度条
-    overall_progress.close()
 
     # 加载最佳模型
     model.load_state_dict(torch.load(f'{save_path}best_model.pt'))
@@ -348,11 +351,12 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
 
 
 # 文本生成函数 - 适应分词器
-def generate_text(model, tokens, token_to_idx, idx_to_token, seed_text, max_length=200, temperature=1.0,
-                  use_tokenizer=True):
+def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, temperature=0.8, use_tokenizer=True,
+                  beam_width=1, unk_penalty=2.0):
+    """生成歌词文本"""
     model.eval()
 
-    # 将种子文本转换为索引
+    # 处理种子文本
     if use_tokenizer:
         seed_tokens = jieba.lcut(seed_text)
     else:
@@ -361,42 +365,62 @@ def generate_text(model, tokens, token_to_idx, idx_to_token, seed_text, max_leng
     # 过滤不在词汇表中的词
     seed_tokens = [token for token in seed_tokens if token in token_to_idx]
     if not seed_tokens:
-        logger.warning("种子文本中的所有词都不在词汇表中，使用随机种子")
+        print("种子文本中的所有词都不在词汇表中，使用随机种子")
         seed_tokens = [random.choice(list(token_to_idx.keys()))]
 
     input_idx = [token_to_idx[token] for token in seed_tokens]
 
-    # 生成文本
-    generated_tokens = seed_tokens.copy()
+    # 获取<unk> token的索引
+    unk_idx = token_to_idx.get('<unk>', None)
 
-    # 生成进度条
-    with tqdm(total=max_length, desc="生成歌词", position=0, dynamic_ncols=True) as gen_progress:
-        for i in range(max_length):
-            # 准备输入张量
+    # 文本生成
+    generated_text = seed_text
+
+    with torch.no_grad():
+        for _ in range(max_length):
             input_tensor = torch.tensor([input_idx], dtype=torch.long).to(device)
-
-            # 前向传播
             output = model(input_tensor)
 
             # 应用温度参数调整预测分布
             output = output[:, -1, :] / temperature
+
+            # 惩罚生成<unk> token
+            if unk_idx is not None:
+                output[0, unk_idx] -= unk_penalty
+
+            # 采样下一个词
             probs = torch.softmax(output, dim=1)
 
-            # 采样下一个词索引
-            next_idx = torch.multinomial(probs, num_samples=1).item()
-            next_token = idx_to_token[next_idx]
+            if beam_width > 1:
+                # 使用beam search
+                next_indices = torch.topk(probs, beam_width, dim=1)[1][0].tolist()
 
-            # 添加到生成的文本中
-            generated_tokens.append(next_token)
+                # 选择概率最高的词
+                next_idx = next_indices[0]
+            else:
+                # 采样
+                next_idx = torch.multinomial(probs, num_samples=1).item()
+
+            # 添加到生成的索引中
+            generated_text += idx_to_token[next_idx]
             input_idx = input_idx[1:] + [next_idx]  # 滑动窗口
 
-            # 每50个词更新一次进度条
-            if i % 50 == 0:
-                gen_progress.set_postfix({"当前词": next_token})
+    # 过滤特殊token
+    filtered_tokens = []
+    for token in generated_text:
+        if token not in ['<pad>', '<bos>', '<eos>']:
+            filtered_tokens.append(token)
 
-            gen_progress.update(1)
+    # 合并为文本
+    if use_tokenizer:
+        generated_text = ''.join(filtered_tokens)
+        # 简单的后处理，提高文本可读性
+        generated_text = re.sub(r'([^\u4e00-\u9fa5])([\u4e00-\u9fa5])', r'\1 \2', generated_text)
+        generated_text = re.sub(r'([\u4e00-\u9fa5])([^\u4e00-\u9fa5])', r'\1 \2', generated_text)
+    else:
+        generated_text = ''.join(filtered_tokens)
 
-    return ''.join(generated_tokens)
+    return generated_text
 
 
 # 主函数
@@ -409,7 +433,7 @@ def main():
         'embed_size': 256,
         'hidden_size': 512,
         'num_layers': 2,
-        'num_heads': 4,
+        'num_heads': 8,
         'dropout': 0.3,
         'learning_rate': 0.001,
         'epochs': 15,
@@ -417,7 +441,7 @@ def main():
         'seed_text': "窗外的麻雀",
         'max_generate_length': 300,
         'temperature': 0.8,
-        'resume_training': True,
+        'resume_training': False,
         'num_workers': min(8, mp.cpu_count()),
         'pin_memory': True,
         'strict_loading': False,
@@ -425,99 +449,78 @@ def main():
         'use_tokenizer': True,  # 是否使用分词器
     }
 
-    # 使用进度条显示整体流程
-    with tqdm(total=7, desc="整体进度", position=0, dynamic_ncols=True) as overall_process:
-        overall_process.set_postfix({"阶段": "初始化"})
+    tokens, token_to_idx, idx_to_token, vocab_size = preprocess_data(config['file_path'], config['use_tokenizer'])
 
-        # 数据预处理
-        overall_process.set_postfix({"阶段": "数据预处理"})
-        tokens, token_to_idx, idx_to_token, vocab_size = preprocess_data(config['file_path'], config['use_tokenizer'])
-        overall_process.update(1)
+    # 创建数据集和数据加载器
+    dataset = LyricsDataset(tokens, config['seq_length'], token_to_idx)
+    data_loader = DataLoader(
+        dataset,
+        batch_size=config['batch_size'],
+        shuffle=True,
+        num_workers=config['num_workers'],
+        pin_memory=config['pin_memory'],
+        persistent_workers=True,
+        prefetch_factor=2
+    )
 
-        # 创建数据集和数据加载器
-        overall_process.set_postfix({"阶段": "创建数据加载器"})
-        dataset = LyricsDataset(tokens, config['seq_length'], token_to_idx)
-        data_loader = DataLoader(
-            dataset,
-            batch_size=config['batch_size'],
-            shuffle=True,
-            num_workers=config['num_workers'],
-            pin_memory=config['pin_memory'],
-            persistent_workers=True,
-            prefetch_factor=2
-        )
-        overall_process.update(1)
+    # 初始化模型
+    model = TransformerModel(
+        vocab_size=vocab_size,
+        embed_size=config['embed_size'],
+        hidden_size=config['hidden_size'],
+        num_layers=config['num_layers'],
+        num_heads=config['num_heads'],
+        dropout=config['dropout']
+    ).to(device)
 
-        # 初始化模型
-        overall_process.set_postfix({"阶段": "初始化模型"})
-        model = TransformerModel(
-            vocab_size=vocab_size,
-            embed_size=config['embed_size'],
-            hidden_size=config['hidden_size'],
-            num_layers=config['num_layers'],
-            num_heads=config['num_heads'],
-            dropout=config['dropout']
-        ).to(device)
+    if device.type == 'cuda':
+        model = torch.nn.parallel.DataParallel(model)
+        logger.info("启用数据并行训练")
 
-        if device.type == 'cuda':
-            model = torch.nn.parallel.DataParallel(model)
-            logger.info("启用数据并行训练")
-        overall_process.update(1)
+    # 设置优化器和调度器
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-4)
+    scheduler = OneCycleLR(
+        optimizer,
+        max_lr=config['learning_rate'],
+        steps_per_epoch=len(data_loader),
+        epochs=config['epochs'],
+        pct_start=0.1,
+        anneal_strategy='cos'
+    )
 
-        # 设置优化器和调度器
-        overall_process.set_postfix({"阶段": "设置优化器"})
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-4)
-        scheduler = OneCycleLR(
-            optimizer,
-            max_lr=config['learning_rate'],
-            steps_per_epoch=len(data_loader),
-            epochs=config['epochs'],
-            pct_start=0.1,
-            anneal_strategy='cos'
-        )
-        overall_process.update(1)
+    # 检查并加载检查点
+    start_epoch = 0
+    checkpoint_path = f"{config['save_path']}checkpoint.pt"
 
-        # 检查并加载检查点
-        overall_process.set_postfix({"阶段": "加载检查点"})
-        start_epoch = 0
-        checkpoint_path = f"{config['save_path']}checkpoint.pt"
+    resume_training = config['resume_training']
+    if os.path.exists(checkpoint_path):
+        model = load_model_state(model, checkpoint_path, strict=config['strict_loading'])
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        start_epoch = checkpoint['epoch']
+        logger.info(f"从 epoch {start_epoch} 恢复训练")
+        logger.info(f"之前的最佳损失: {checkpoint['loss']:.4f}")
+    else:
+        resume_training = True
 
-        if config['resume_training'] and os.path.exists(checkpoint_path):
-            model = load_model_state(model, checkpoint_path, strict=config['strict_loading'])
-            try:
-                checkpoint = torch.load(checkpoint_path, map_location=device)
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                start_epoch = checkpoint['epoch']
-                logger.info(f"从 epoch {start_epoch} 恢复训练")
-                logger.info(f"之前的最佳损失: {checkpoint['loss']:.4f}")
-            except Exception as e:
-                logger.warning(f"无法恢复优化器/调度器状态: {str(e)}")
-                logger.info("将使用新的优化器和调度器")
-        else:
-            logger.info("从头开始训练新模型")
-        overall_process.update(1)
-
+    if resume_training:
         # 训练模型
-        overall_process.set_postfix({"阶段": "训练模型"})
         logger.info(f"开始训练，总轮数: {config['epochs']}, 学习率阈值: {config['lr_threshold']}")
         model = train(model, data_loader, criterion, optimizer, scheduler,
                       config['epochs'], device, config['save_path'], start_epoch=start_epoch,
                       lr_threshold=config['lr_threshold'])
-        overall_process.update(1)
 
-        # 生成歌词
-        overall_process.set_postfix({"阶段": "生成歌词"})
-        generated_lyrics = generate_text(model, tokens, token_to_idx, idx_to_token,
-                                         config['seed_text'], config['max_generate_length'],
-                                         config['temperature'], config['use_tokenizer'])
-        overall_process.update(1)
+    # 生成歌词
+    generated_lyrics = generate_text(model, token_to_idx, idx_to_token,
+                                     config['seed_text'], config['max_generate_length'],
+                                     config['temperature'], config['use_tokenizer'])
 
-        # 打印歌词
-        print("\n===== 生成的歌词 =====")
-        print(generated_lyrics)
-        print("=====================")
+    # 打印歌词
+    print("\n===== 生成的歌词 =====")
+    print(generated_lyrics)
+    print("=====================")
 
 
 if __name__ == "__main__":
