@@ -1,5 +1,4 @@
 import re
-
 import torch
 import torch.nn as nn
 import numpy as np
@@ -13,7 +12,8 @@ from torch.optim.lr_scheduler import OneCycleLR
 from tqdm import tqdm
 import logging
 import multiprocessing as mp
-import jieba  # 添加分词器依赖
+import jieba
+from collections import Counter
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -45,8 +45,8 @@ elif os.name == 'nt':  # Windows 系统
         print("Install DirectML with: pip install torch-directml")
 
 
-# 数据预处理函数 - 优化分词处理
-def preprocess_data(file_path, use_tokenizer=True):
+# 数据预处理函数 - 增强断句处理
+def preprocess_data(file_path, use_tokenizer=True, augment_punctuation=True):
     print(f"开始处理数据文件: {file_path}")
     text = ""
 
@@ -69,13 +69,16 @@ def preprocess_data(file_path, use_tokenizer=True):
                                 content = f.read().decode('gbk')
                             text += content
 
-    print(f"去除特殊字符前文本长度: {text}")
+    # 保留重要的断句符号
     pattern = r'[^\u4e00-\u9fa5a-zA-Z0-9，。！？、；：“”‘’（）《》【】{}()\[\]<>—-—,.!?;:\'\"`~@#$%^&*()_+=\-|\\\/*]'
     text = re.sub(pattern, '', text)
-    # 规范化空格和换行
-    # text = re.sub(r'\s+', ' ', text)  # 多个空格合并为一个
-    # text = re.sub(r'[ \t]+$', '', text, flags=re.M)  # 去除行尾空格
-    print(f"去除特殊字符后文本长度: {len(text)}")
+
+    # 增强断句符号的表示
+    if augment_punctuation:
+        # 增加断句符号的权重（复制多次）
+        punctuation_marks = ['，', '。', '！', '？', ';', ':', ',', '.', '!', '?']
+        for mark in punctuation_marks:
+            text = text.replace(mark, mark * 3)  # 每个符号复制3次，增加模型关注
 
     # 应用分词器
     if use_tokenizer:
@@ -107,6 +110,10 @@ def preprocess_data(file_path, use_tokenizer=True):
     idx_to_token = {i: token for i, token in enumerate(unique_tokens)}
     vocab_size = len(unique_tokens)
 
+    # 统计断句符号频率
+    punct_freq = {mark: tokens.count(mark) for mark in punctuation_marks if mark in tokens}
+    logger.info(f"断句符号频率统计: {punct_freq}")
+
     print(f"词汇表大小: {vocab_size} 个唯一token，包含特殊标记")
 
     return tokens, token_to_idx, idx_to_token, vocab_size
@@ -136,8 +143,8 @@ class LyricsDataset(Dataset):
         target_tokens = self.tokens[start_idx + 1:end_idx + 1]
 
         # 将词转换为索引并转为张量
-        input_tensor = torch.tensor([self.token_to_idx[token] for token in input_tokens], dtype=torch.long)
-        target_tensor = torch.tensor([self.token_to_idx[token] for token in target_tokens], dtype=torch.long)
+        input_tensor = torch.tensor([self.token_to_idx.get(token, self.token_to_idx['<unk>']) for token in input_tokens], dtype=torch.long)
+        target_tensor = torch.tensor([self.token_to_idx.get(token, self.token_to_idx['<unk>']) for token in target_tokens], dtype=torch.long)
 
         return input_tensor, target_tensor
 
@@ -350,11 +357,16 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
     return model
 
 
-# 文本生成函数 - 适应分词器
+# 文本生成函数 - 增强断句逻辑
 def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, temperature=0.8, use_tokenizer=True,
-                  beam_width=1, unk_penalty=2.0):
-    """生成歌词文本"""
+                  beam_width=1, unk_penalty=2.0, punctuation_bias=0.5, min_sentence_length=5):
+    """生成歌词文本，增强断句逻辑"""
     model.eval()
+
+    # 断句符号列表
+    sentence_enders = ['。', '！', '？', '.', '!', '?', '；', ';']
+    line_breakers = ['，', '、', ',', ':', '：']
+    all_punctuation = sentence_enders + line_breakers
 
     # 处理种子文本
     if use_tokenizer:
@@ -373,8 +385,12 @@ def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, 
     # 获取<unk> token的索引
     unk_idx = token_to_idx.get('<unk>', None)
 
+    # 跟踪当前句子长度
+    current_sentence_length = 0
+
     # 文本生成
     generated_text = seed_text
+    generated_tokens = seed_tokens.copy()
 
     with torch.no_grad():
         for _ in range(max_length):
@@ -388,39 +404,47 @@ def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, 
             if unk_idx is not None:
                 output[0, unk_idx] -= unk_penalty
 
+            # 断句策略
+            if current_sentence_length > min_sentence_length:
+                # 增加断句符号的概率
+                for punc in all_punctuation:
+                    if punc in token_to_idx:
+                        output[0, token_to_idx[punc]] += punctuation_bias
+
             # 采样下一个词
             probs = torch.softmax(output, dim=1)
 
             if beam_width > 1:
                 # 使用beam search
                 next_indices = torch.topk(probs, beam_width, dim=1)[1][0].tolist()
-
-                # 选择概率最高的词
                 next_idx = next_indices[0]
             else:
                 # 采样
                 next_idx = torch.multinomial(probs, num_samples=1).item()
 
-            # 添加到生成的索引中
-            generated_text += idx_to_token[next_idx]
+            # 获取下一个token
+            next_token = idx_to_token[next_idx]
+            generated_text += next_token
+            generated_tokens.append(next_token)
             input_idx = input_idx[1:] + [next_idx]  # 滑动窗口
 
-    # 过滤特殊token
-    filtered_tokens = []
-    for token in generated_text:
-        if token not in ['<pad>', '<bos>', '<eos>']:
-            filtered_tokens.append(token)
+            # 更新句子长度
+            current_sentence_length += 1
 
-    # 合并为文本
-    if use_tokenizer:
-        generated_text = ''.join(filtered_tokens)
-        # 简单的后处理，提高文本可读性
-        generated_text = re.sub(r'([^\u4e00-\u9fa5])([\u4e00-\u9fa5])', r'\1 \2', generated_text)
-        generated_text = re.sub(r'([\u4e00-\u9fa5])([^\u4e00-\u9fa5])', r'\1 \2', generated_text)
-    else:
-        generated_text = ''.join(filtered_tokens)
+            # 如果生成了句子结束符号，重置句子长度
+            if next_token in sentence_enders:
+                current_sentence_length = 0
 
-    return generated_text
+    # 后处理：添加换行符
+    processed_text = ""
+    for token in generated_tokens:
+        processed_text += token
+        if token in sentence_enders:
+            processed_text += "\n\n"  # 句子结束后空行
+        elif token in line_breakers:
+            processed_text += "\n"  # 行内停顿后换行
+
+    return processed_text
 
 
 # 主函数
@@ -436,7 +460,7 @@ def main():
         'num_heads': 8,
         'dropout': 0.3,
         'learning_rate': 0.001,
-        'epochs': 15,
+        'epochs': 1,
         'save_path': 'models/',
         'seed_text': "窗外的麻雀",
         'max_generate_length': 300,
@@ -447,9 +471,15 @@ def main():
         'strict_loading': False,
         'lr_threshold': 1e-6,  # 学习率低于此值时终止训练
         'use_tokenizer': True,  # 是否使用分词器
+        'punctuation_bias': 0.8,  # 断句符号偏好强度
+        'min_sentence_length': 6,  # 最小句子长度
     }
 
-    tokens, token_to_idx, idx_to_token, vocab_size = preprocess_data(config['file_path'], config['use_tokenizer'])
+    tokens, token_to_idx, idx_to_token, vocab_size = preprocess_data(
+        config['file_path'],
+        config['use_tokenizer'],
+        augment_punctuation=True  # 增强断句符号学习
+    )
 
     # 创建数据集和数据加载器
     dataset = LyricsDataset(tokens, config['seq_length'], token_to_idx)
@@ -513,9 +543,13 @@ def main():
                       lr_threshold=config['lr_threshold'])
 
     # 生成歌词
-    generated_lyrics = generate_text(model, token_to_idx, idx_to_token,
-                                     config['seed_text'], config['max_generate_length'],
-                                     config['temperature'], config['use_tokenizer'])
+    generated_lyrics = generate_text(
+        model, token_to_idx, idx_to_token,
+        config['seed_text'], config['max_generate_length'],
+        config['temperature'], config['use_tokenizer'],
+        punctuation_bias=config['punctuation_bias'],
+        min_sentence_length=config['min_sentence_length']
+    )
 
     # 打印歌词
     print("\n===== 生成的歌词 =====")
