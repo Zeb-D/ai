@@ -111,8 +111,8 @@ def preprocess_data(file_path, use_tokenizer=True, augment_punctuation=True):
     vocab_size = len(unique_tokens)
 
     # 统计断句符号频率
-    punct_freq = {mark: tokens.count(mark) for mark in punctuation_marks if mark in tokens}
-    logger.info(f"断句符号频率统计: {punct_freq}")
+    # punct_freq = {mark: tokens.count(mark) for mark in punctuation_marks if mark in tokens}
+    # logger.info(f"断句符号频率统计: {punct_freq}")
 
     print(f"词汇表大小: {vocab_size} 个唯一token，包含特殊标记")
 
@@ -357,9 +357,12 @@ def train(model, data_loader, criterion, optimizer, scheduler, epochs, device, s
     return model
 
 
+# ... 已有代码 ...
+
 # 文本生成函数 - 增强断句逻辑
 def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, temperature=0.8, use_tokenizer=True,
-                  beam_width=1, unk_penalty=2.0, punctuation_bias=0.5, min_sentence_length=5):
+                  beam_width=1, unk_penalty=2.0, punctuation_bias=0.5, min_sentence_length=5,
+                  repeat_penalty=0.5, rhyme_bonus=1.0, max_sentence_length=20, coherence_threshold=0.8):
     """生成歌词文本，增强断句逻辑"""
     model.eval()
 
@@ -387,6 +390,12 @@ def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, 
 
     # 跟踪当前句子长度
     current_sentence_length = 0
+    # 记录最近生成的词
+    recent_tokens = []
+    # 记录上一句最后一个字符，用于押韵
+    last_char = None
+    # 记录生成的行
+    prev_lines = []
 
     # 文本生成
     generated_text = seed_text
@@ -404,12 +413,37 @@ def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, 
             if unk_idx is not None:
                 output[0, unk_idx] -= unk_penalty
 
-            # 断句策略
+            # 惩罚最近生成的词
+            for token in recent_tokens:
+                if token in token_to_idx:
+                    output[0, token_to_idx[token]] *= repeat_penalty
+
+            # 押韵机制
+            if last_char and rhyme_bonus > 0:
+                for token, idx in token_to_idx.items():
+                    if token.endswith(last_char):
+                        output[0, idx] += rhyme_bonus
+
+            # 动态断句策略
             if current_sentence_length > min_sentence_length:
-                # 增加断句符号的概率
+                # 随着句子变长，增加断句概率
+                dynamic_bias = punctuation_bias * (current_sentence_length / max_sentence_length)
                 for punc in all_punctuation:
                     if punc in token_to_idx:
-                        output[0, token_to_idx[punc]] += punctuation_bias
+                        output[0, token_to_idx[punc]] += dynamic_bias
+
+            # 强制断句：句子过长时强制使用结束符号
+            if current_sentence_length >= max_sentence_length:
+                for punc in sentence_enders:
+                    if punc in token_to_idx:
+                        output[0, token_to_idx[punc]] += 100  # 大幅提高结束符号概率
+
+            # 连贯性增强：惩罚最近出现过的词
+            if len(generated_tokens) > 2:
+                recent_tokens = generated_tokens[-3:]
+                for token in recent_tokens:
+                    if token in token_to_idx:
+                        output[0, token_to_idx[token]] *= coherence_threshold
 
             # 采样下一个词
             probs = torch.softmax(output, dim=1)
@@ -428,24 +462,51 @@ def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, 
             generated_tokens.append(next_token)
             input_idx = input_idx[1:] + [next_idx]  # 滑动窗口
 
+            # 更新最近生成的词
+            recent_tokens = (recent_tokens + [next_token])[-5:]
+
             # 更新句子长度
             current_sentence_length += 1
 
-            # 如果生成了句子结束符号，重置句子长度
+            # 如果生成了句子结束符号，重置句子长度和记录最后一个字符
             if next_token in sentence_enders:
                 current_sentence_length = 0
+                last_char = next_token if len(next_token) > 0 else None
+                prev_lines.append(''.join(generated_tokens[-current_sentence_length:]))
 
-    # 后处理：添加换行符
+            # 智能断句：根据语义连贯性和长度断句
+            if current_sentence_length >= max_sentence_length * 0.7:
+                for punc in all_punctuation:
+                    if punc in token_to_idx:
+                        output[0, token_to_idx[punc]] += 20  # 提高断句概率
+
+    """后处理文本"""
     processed_text = ""
     for token in generated_tokens:
         processed_text += token
         if token in sentence_enders:
-            processed_text += "\n\n"  # 句子结束后空行
+            processed_text += "\n"  # 句子结束后换行
         elif token in line_breakers:
             processed_text += "\n"  # 行内停顿后换行
 
-    return processed_text
+    # 优化歌词结构：去除孤立的句号行
+    lines = processed_text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        # 去除空白字符
+        stripped_line = line.strip()
+        # 如果行只包含句号或为空，跳过
+        if stripped_line == '' or len(stripped_line) == 1:
+            continue
+        cleaned_lines.append(line)
 
+    # 重新组合文本，确保段落间有一个空行
+    final_text = '\n'.join(cleaned_lines)
+    # 避免开头或结尾有空行
+    final_text = final_text.strip()
+    # 确保段落间只有一个空行
+    final_text = re.sub(r'\n{3,}', '\n\n', final_text)
+    return final_text
 
 # 主函数
 def main():
