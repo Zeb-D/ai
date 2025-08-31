@@ -1,3 +1,4 @@
+from common import device
 import torch
 import torch.nn as nn
 import numpy as np
@@ -16,7 +17,7 @@ np.random.seed(42)
 random.seed(42)
 
 # 检查是否有GPU可用
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = device.get_device()
 
 
 class LyricsDataset(Dataset):
