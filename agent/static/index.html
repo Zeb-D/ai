@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>聊天</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%AC%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <span class="title">聊天</span>
+    <label class="read-toggle">
+      <input type="checkbox" id="autoRead" />
+      <span>朗读回复</span>
+    </label>
+  </header>
+
+  <main id="messages"></main>
+
+  <footer>
+    <textarea id="input" rows="1" placeholder="输入消息…" enterkeyhint="send"></textarea>
+    <button id="send">发送</button>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

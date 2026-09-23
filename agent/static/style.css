@@ -1,0 +1,152 @@
+/* 最小聊天界面：手机优先 + 深色模式 + 安全区适配 */
+
+:root {
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --surface-2: #eceef1;
+  --text: #16181d;
+  --muted: #6b7280;
+  --accent: #2f6df6;
+  --accent-text: #ffffff;
+  --border: rgba(0, 0, 0, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --surface: #191c22;
+    --surface-2: #23272f;
+    --text: #e8eaf0;
+    --muted: #9aa3b2;
+    --accent: #4c8dff;
+    --accent-text: #08111f;
+    --border: rgba(255, 255, 255, 0.09);
+  }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; }
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+        "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  overscroll-behavior-y: none;
+}
+
+/* ---------- 顶栏 ---------- */
+header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: calc(env(safe-area-inset-top) + 10px) 14px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.title { font-weight: 600; font-size: 17px; }
+
+.read-toggle {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 14px; color: var(--muted);
+}
+.read-toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
+
+/* ---------- 消息区 ---------- */
+#messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msg { display: flex; }
+.msg.user { justify-content: flex-end; }
+.msg.assistant { justify-content: flex-start; }
+
+.bubble {
+  max-width: min(84%, 640px);
+  padding: 10px 14px;
+  border-radius: 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.msg.user .bubble {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-bottom-right-radius: 6px;
+}
+.msg.assistant .bubble {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 6px;
+}
+
+/* 等待首个字符时的提示 */
+.bubble.typing:empty::after {
+  content: "●●●";
+  letter-spacing: 3px;
+  font-size: 10px;
+  color: var(--muted);
+  animation: blink 1.2s infinite;
+}
+@keyframes blink { 0%, 100% { opacity: .3 } 50% { opacity: 1 } }
+
+/* ---------- 输入区 ---------- */
+footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px calc(env(safe-area-inset-bottom) + 10px);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+#input {
+  flex: 1 1 auto;
+  resize: none;
+  min-height: 44px;
+  max-height: 40vh;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px; /* 16px 可避免 iOS 自动放大 */
+  line-height: 1.4;
+}
+#input:focus { outline: 2px solid rgba(47, 109, 246, 0.45); }
+
+#send {
+  flex: 0 0 auto;
+  height: 44px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 14px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#send.stop { background: #d64545; color: #fff; }
+#send:active { transform: scale(0.97); }
+#send:disabled { opacity: .5; }
+
+@media (min-width: 760px) {
+  header, #messages, footer {
+    padding-left: max(12px, calc((100vw - 720px) / 2));
+    padding-right: max(12px, calc((100vw - 720px) / 2));
+  }
+  .bubble { max-width: min(76%, 620px); }
+}
