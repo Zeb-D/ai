@@ -6,7 +6,7 @@ eval "$(pyenv init -)"
 
 source ~/.bashrc   # 或者 source ~/.zshrc
 
-pyenv install 3.9.18
+pyenv install 3.12
 
 
 brew install pip

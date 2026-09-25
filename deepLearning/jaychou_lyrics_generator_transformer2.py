@@ -60,7 +60,7 @@ def preprocess_data(file_path, use_tokenizer=True):
     # 应用分词器
     if use_tokenizer:
         logger.info("使用分词器处理文本...")
-        words = jieba.lcut(text)
+        words = jieba.cut(text)
         # 过滤空字符串
         tokens = [word for word in words if word.strip()]
         logger.info(f"分词后总词数: {len(tokens)}")
@@ -286,7 +286,7 @@ def generate_text(model, token_to_idx, idx_to_token, seed_text, max_length=200, 
     model.eval()
 
     if use_tokenizer:
-        seed_tokens = jieba.lcut(seed_text)
+        seed_tokens = jieba.cut(seed_text)
     else:
         seed_tokens = list(seed_text)
 

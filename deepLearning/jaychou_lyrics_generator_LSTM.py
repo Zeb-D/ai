@@ -278,7 +278,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
 
     # 添加学习率调度
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
     # 检查是否有检查点文件
     start_epoch = 0
