@@ -398,52 +398,52 @@ criterion = nn.CrossEntropyLoss()
 num_steps = 1000
 batch_size = 32
 
-print("开始训练...")
-for step in range(num_steps):
-    model.train()
-
-    # 生成随机批次
-    src, tgt_input, tgt_output = generate_batch(batch_size, seq_len)
-    src = src.to(device)
-    tgt_input = tgt_input.to(device)
-    tgt_output = tgt_output.to(device)
-
-    # 生成 look-ahead mask，形状 [1,1,seq_len,seq_len]
-    tgt_mask = subsequent_mask(seq_len).to(device)
-
-    # 前向传播
-    logits = model(src, tgt_input, None, tgt_mask)  # [batch, seq_len, vocab_size]
-
-    # 计算损失
-    loss = criterion(
-        logits.reshape(-1, vocab_size),
-        tgt_output.reshape(-1)
-    )
-
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-    if step % 100 == 0:
-        print(f"step {step:4d}, loss = {loss.item():.4f}")
-
-print("训练完成！\n")
-
-# 测试模型复制长句子的能力
-model.eval()
-
-src_test = src_sentence.unsqueeze(0).to(device)  # [1, seq_len]
-tgt_input_test = tgt_input_sentence.unsqueeze(0).to(device)  # [1, seq_len]
-tgt_mask_test = subsequent_mask(seq_len).to(device)
-
-with torch.no_grad():
-    logits = model(src_test, tgt_input_test, None, tgt_mask_test)
-    preds = logits.argmax(dim=-1)  # [1, seq_len]
-
-print("输入句子: ", sentence)
-print("模型输出: ", tensor_to_text(preds[0]))
 
 
 
 if __name__ == "__main__":
-    hf_run_all_verifications()
+
+    print("开始训练...")
+    for step in range(num_steps):
+        model.train()
+
+        # 生成随机批次
+        src, tgt_input, tgt_output = generate_batch(batch_size, seq_len)
+        src = src.to(device)
+        tgt_input = tgt_input.to(device)
+        tgt_output = tgt_output.to(device)
+
+        # 生成 look-ahead mask，形状 [1,1,seq_len,seq_len]
+        tgt_mask = subsequent_mask(seq_len).to(device)
+
+        # 前向传播
+        logits = model(src, tgt_input, None, tgt_mask)  # [batch, seq_len, vocab_size]
+
+        # 计算损失
+        loss = criterion(
+            logits.reshape(-1, vocab_size),
+            tgt_output.reshape(-1)
+        )
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if step % 100 == 0:
+            print(f"step {step:4d}, loss = {loss.item():.4f}")
+
+    print("训练完成！\n")
+
+    # 测试模型复制长句子的能力
+    model.eval()
+
+    src_test = src_sentence.unsqueeze(0).to(device)  # [1, seq_len]
+    tgt_input_test = tgt_input_sentence.unsqueeze(0).to(device)  # [1, seq_len]
+    tgt_mask_test = subsequent_mask(seq_len).to(device)
+
+    with torch.no_grad():
+        logits = model(src_test, tgt_input_test, None, tgt_mask_test)
+        preds = logits.argmax(dim=-1)  # [1, seq_len]
+
+    print("输入句子: ", sentence)
+    print("模型输出: ", tensor_to_text(preds[0]))

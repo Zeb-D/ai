@@ -1,0 +1,21 @@
+[package]
+name = "onnx_rust_demo"
+version = "0.1.0"
+edition = "2021"
+description = "验证：同一个 ONNX 模型可在 Rust 中加载并推理（跨语言可移植性）"
+
+[dependencies]
+# 关键点：
+#  - default-features = false  → 关掉 ort 默认的 download-binaries / copy-dylibs，
+#    避免构建期联网下载预编译 onnxruntime（国内网络下会卡死）。
+#  - load-dynamic → 复用系统已安装的 libonnxruntime（本 demo 指向 venv 里的 1.30.0）。
+# 版本选择：本机 rustc 1.86；ort 2.0.0-rc.11+ 要求 rustc>=1.88，
+# 故固定在 rc.10（要求 rustc>=1.81，兼容）。
+ort = { version = "=2.0.0-rc.10", default-features = false, features = [
+    "std",
+    "ndarray",
+    "load-dynamic",
+] }
+
+[profile.release]
+opt-level = 2
