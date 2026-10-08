@@ -1,0 +1,49 @@
+# =====================================================================
+# 模型与推理引擎配置
+# 服务端仅在本地加载开源模型权重，不存在任何指向外部的网络客户端。
+# =====================================================================
+
+# 引擎类型: vllm | sglang | llamacpp（均为进程内嵌，权重本地加载）
+#   vllm / sglang : Linux + NVIDIA GPU(CUDA)，高吞吐，适合在线服务
+#   llamacpp      : 跨平台（Linux / macOS / Windows；CPU 或 Metal/CUDA），GGUF 权重
+engine: vllm
+
+# 模型来源：
+#   - vllm / sglang ：Hugging Face 仓库 ID（从默认缓存 ~/.cache/huggingface/hub 解析），
+#                     或本地目录，例如 /models/Qwen2.5-1.5B-Instruct-AWQ
+#   - llamacpp      ：本地 .gguf 文件路径，例如
+#                     ~/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct-GGUF/
+#                     snapshots/<rev>/qwen2.5-1.5b-instruct-q4_k_m.gguf
+model_path: Qwen/Qwen2.5-1.5B-Instruct
+
+# 量化方式: awq | gptq | fp8 | int8 | null(即 FP16)
+# 仅 vllm / sglang 生效；llama.cpp 的量化已内嵌于 GGUF，此项被忽略。
+quantization: null
+
+# 张量并行度（多卡）。1 表示单卡。仅 vllm / sglang 生效。
+tp_size: 1
+
+# 单卡显存占用上限比例（仅 vllm / sglang）
+gpu_mem_util: 0.90
+
+# 上下文长度上限（各引擎通用；llama.cpp 对应 n_ctx）
+max_model_len: 4096
+
+# 前缀缓存（翻译固定 System Prompt 收益极大；仅 vllm / sglang）
+prefix_caching: true
+
+# 是否信任模型自定义代码（Qwen 通常无需，但保留开关）
+trust_remote_code: true
+
+# ---- llama.cpp 专用（engine: llamacpp 时生效）----
+# 卸载到 GPU 的层数：0=纯 CPU；-1=全部层（macOS Metal / NVIDIA CUDA）；N=前 N 层
+n_gpu_layers: 0
+# 线程数：null 表示自动
+n_threads: null
+# 聊天模板覆盖：一般留空，由 GGUF 内嵌模板决定；必要时填 "qwen"
+chat_format: null
+
+# ---- 生成默认参数 ----
+# 翻译任务默认贪心解码，保证结果确定、可复现
+default_temperature: 0.0
+default_max_tokens: 1024

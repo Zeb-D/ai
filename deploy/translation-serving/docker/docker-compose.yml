@@ -1,0 +1,41 @@
+# =====================================================================
+# 单机部署：应用（网关 + 进程内嵌 vLLM） + Redis 缓存
+# 用法：
+#   docker compose up
+#   自定义缓存目录：HF_CACHE=/data/hf docker compose up
+# =====================================================================
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - TS_ENGINE=vllm
+      # 复用宿主机的 Hugging Face 缓存；model.yaml 的默认仓库 ID 将从此解析
+      - HF_HOME=/root/.cache/huggingface
+      # 强制离线，杜绝任何外部网络依赖（反需求 R1）
+      - HF_HUB_OFFLINE=1
+      - TS_L2_REDIS=redis://redis:6379/0
+      - TS_LOG_LEVEL=INFO
+    volumes:
+      # 宿主缓存目录 -> 容器 HF_HOME（只读）
+      - "${HF_CACHE:-$HOME/.cache/huggingface}:/root/.cache/huggingface:ro"
+      - ../configs:/app/configs:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - redis

@@ -1,0 +1,37 @@
+# =====================================================================
+# 服务层配置（网关）
+# =====================================================================
+
+host: 0.0.0.0
+port: 8080
+
+# 网关最大并发（与引擎 Continuous Batching 能力匹配）
+max_concurrency: 64
+
+log_level: INFO
+
+# 配置目录（供 prompt 模板加载）。可被环境变量 TS_CONFIG_DIR 覆盖。
+config_dir: configs
+
+# 术语表文件路径（yaml/json）。null 表示不启用。
+glossary_path: configs/glossary.yaml
+
+cache:
+  enabled: true
+  # L1 进程内 LRU 条目数
+  l1_size: 4096
+  # L2 Redis 连接串；null 或 Redis 不可用时自动降级为仅 L1
+  l2_redis: null            # 例: redis://127.0.0.1:6379/0
+  ttl: 86400
+
+ratelimit:
+  enabled: true
+  # 令牌桶：每秒补充令牌数 / 桶容量
+  qps: 200
+  burst: 400
+
+# 微批处理（把并发单请求聚合成批，提升离线场景 GPU 利用率）
+batching:
+  enabled: false
+  max_batch_size: 16
+  max_wait_ms: 10

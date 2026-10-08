@@ -1,0 +1,23 @@
+# 应用镜像：网关 + 进程内嵌推理引擎（单容器，无外部推理服务依赖）。
+#
+# 默认基于 vLLM 官方镜像（已含 vLLM）：
+#   若使用 SGLang，将基础镜像替换为 lmsysorg/sglang 并设置 TS_ENGINE=sglang。
+#
+# 反需求 R1：容器内不存在任何指向公网/云厂商的客户端；模型权重由只读卷挂载。
+FROM vllm/vllm-openai:latest
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app ./app
+COPY configs ./configs
+
+ENV PYTHONUNBUFFERED=1 \
+    TS_CONFIG_DIR=/app/configs \
+    TS_ENGINE=vllm
+
+EXPOSE 8080
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
